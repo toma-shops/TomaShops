@@ -1,124 +1,97 @@
-import { NextResponse } from "next/server"
-import { getServerSession } from "next-auth"
+import { NextAuthOptions } from "next-auth"
+import NextAuth from "next-auth/next"
+import { PrismaAdapter } from "@auth/prisma-adapter"
 import { prisma } from "@/lib/db"
-import { authOptions } from "@/app/api/auth/[...nextauth]/route"
+import GoogleProvider from "next-auth/providers/google"
+import CredentialsProvider from "next-auth/providers/credentials"
+import bcrypt from "bcryptjs"
 
-export async function GET() {
-  try {
-    const categories = await prisma.category.findMany({
-      orderBy: {
-        name: "asc",
+export const authOptions: NextAuthOptions = {
+  adapter: PrismaAdapter(prisma),
+  session: {
+    strategy: "jwt",
+  },
+  pages: {
+    signIn: "/auth/signin",
+  },
+  providers: [
+    GoogleProvider({
+      clientId: process.env.GOOGLE_CLIENT_ID!,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+    }),
+    CredentialsProvider({
+      name: "credentials",
+      credentials: {
+        email: { label: "Email", type: "email" },
+        password: { label: "Password", type: "password" },
       },
-    })
+      async authorize(credentials) {
+        if (!credentials?.email || !credentials?.password) {
+          throw new Error("Invalid credentials")
+        }
 
-    return NextResponse.json(categories)
-  } catch (error) {
-    console.error(error)
-    return NextResponse.json(
-      { error: "Something went wrong" },
-      { status: 500 }
-    )
-  }
+        const user = await prisma.user.findUnique({
+          where: {
+            email: credentials.email,
+          },
+        })
+
+        if (!user || !user.password) {
+          throw new Error("Invalid credentials")
+        }
+
+        const isValid = await bcrypt.compare(credentials.password, user.password)
+
+        if (!isValid) {
+          throw new Error("Invalid credentials")
+        }
+
+        return {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          image: user.image,
+        }
+      },
+    }),
+  ],
+  callbacks: {
+    async session({ token, session }) {
+      if (token) {
+        session.user.id = token.id
+        session.user.name = token.name
+        session.user.email = token.email
+        session.user.image = token.picture
+        session.user.role = token.role
+      }
+
+      return session
+    },
+    async jwt({ token, user }) {
+      const dbUser = await prisma.user.findFirst({
+        where: {
+          email: token.email!,
+        },
+      })
+
+      if (!dbUser) {
+        if (user) {
+          token.id = user?.id
+        }
+        return token
+      }
+
+      return {
+        id: dbUser.id,
+        name: dbUser.name,
+        email: dbUser.email,
+        picture: dbUser.image,
+        role: dbUser.role,
+      }
+    },
+  },
 }
 
-export async function POST(req: Request) {
-  try {
-    const session = await getServerSession(authOptions)
+const handler = NextAuth(authOptions)
 
-    if (!session?.user || session.user.role !== "ADMIN") {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      )
-    }
-
-    const { name, description, image } = await req.json()
-
-    const category = await prisma.category.create({
-      data: {
-        name,
-        description,
-        image,
-      },
-    })
-
-    return NextResponse.json(category, { status: 201 })
-  } catch (error) {
-    console.error(error)
-    return NextResponse.json(
-      { error: "Something went wrong" },
-      { status: 500 }
-    )
-  }
-}
-
-export async function PUT(req: Request) {
-  try {
-    const session = await getServerSession(authOptions)
-
-    if (!session?.user || session.user.role !== "ADMIN") {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      )
-    }
-
-    const { id, name, description, image } = await req.json()
-
-    const category = await prisma.category.update({
-      where: {
-        id,
-      },
-      data: {
-        name,
-        description,
-        image,
-      },
-    })
-
-    return NextResponse.json(category)
-  } catch (error) {
-    console.error(error)
-    return NextResponse.json(
-      { error: "Something went wrong" },
-      { status: 500 }
-    )
-  }
-}
-
-export async function DELETE(req: Request) {
-  try {
-    const session = await getServerSession(authOptions)
-
-    if (!session?.user || session.user.role !== "ADMIN") {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      )
-    }
-
-    const { searchParams } = new URL(req.url)
-    const id = searchParams.get("id")
-
-    if (!id) {
-      return NextResponse.json(
-        { error: "Category ID is required" },
-        { status: 400 }
-      )
-    }
-
-    await prisma.category.delete({
-      where: {
-        id,
-      },
-    })
-
-    return NextResponse.json(null, { status: 204 })
-  } catch (error) {
-    console.error(error)
-    return NextResponse.json(
-      { error: "Something went wrong" },
-      { status: 500 }
-    )
-  }
-} 
+export { handler as GET, handler as POST } 
