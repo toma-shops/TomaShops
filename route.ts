@@ -1,97 +1,51 @@
-import { NextAuthOptions } from "next-auth"
-import NextAuth from "next-auth/next"
-import { PrismaAdapter } from "@auth/prisma-adapter"
+import { NextResponse } from "next/server"
+import { hash } from "bcryptjs"
 import { prisma } from "@/lib/db"
-import GoogleProvider from "next-auth/providers/google"
-import CredentialsProvider from "next-auth/providers/credentials"
-import bcrypt from "bcryptjs"
 
-export const authOptions: NextAuthOptions = {
-  adapter: PrismaAdapter(prisma),
-  session: {
-    strategy: "jwt",
-  },
-  pages: {
-    signIn: "/auth/signin",
-  },
-  providers: [
-    GoogleProvider({
-      clientId: process.env.GOOGLE_CLIENT_ID!,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
-    }),
-    CredentialsProvider({
-      name: "credentials",
-      credentials: {
-        email: { label: "Email", type: "email" },
-        password: { label: "Password", type: "password" },
+export async function POST(req: Request) {
+  try {
+    const { name, email, password } = await req.json()
+
+    // Check if user exists
+    const existingUser = await prisma.user.findUnique({
+      where: {
+        email,
       },
-      async authorize(credentials) {
-        if (!credentials?.email || !credentials?.password) {
-          throw new Error("Invalid credentials")
-        }
+    })
 
-        const user = await prisma.user.findUnique({
-          where: {
-            email: credentials.email,
-          },
-        })
+    if (existingUser) {
+      return NextResponse.json(
+        { error: "User already exists" },
+        { status: 400 }
+      )
+    }
 
-        if (!user || !user.password) {
-          throw new Error("Invalid credentials")
-        }
+    // Hash password
+    const hashedPassword = await hash(password, 10)
 
-        const isValid = await bcrypt.compare(credentials.password, user.password)
+    // Create user
+    const user = await prisma.user.create({
+      data: {
+        name,
+        email,
+        password: hashedPassword,
+      },
+    })
 
-        if (!isValid) {
-          throw new Error("Invalid credentials")
-        }
-
-        return {
-          id: user.id,
-          email: user.email,
+    return NextResponse.json(
+      {
+        user: {
           name: user.name,
-          image: user.image,
-        }
-      },
-    }),
-  ],
-  callbacks: {
-    async session({ token, session }) {
-      if (token) {
-        session.user.id = token.id
-        session.user.name = token.name
-        session.user.email = token.email
-        session.user.image = token.picture
-        session.user.role = token.role
-      }
-
-      return session
-    },
-    async jwt({ token, user }) {
-      const dbUser = await prisma.user.findFirst({
-        where: {
-          email: token.email!,
+          email: user.email,
         },
-      })
-
-      if (!dbUser) {
-        if (user) {
-          token.id = user?.id
-        }
-        return token
-      }
-
-      return {
-        id: dbUser.id,
-        name: dbUser.name,
-        email: dbUser.email,
-        picture: dbUser.image,
-        role: dbUser.role,
-      }
-    },
-  },
-}
-
-const handler = NextAuth(authOptions)
-
-export { handler as GET, handler as POST } 
+      },
+      { status: 201 }
+    )
+  } catch (error) {
+    console.error(error)
+    return NextResponse.json(
+      { error: "Something went wrong" },
+      { status: 500 }
+    )
+  }
+} 
